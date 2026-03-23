@@ -1,0 +1,149 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label to stamp onto manual build artifacts
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      commit: ${{ steps.meta.outputs.commit }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${{ github.event.inputs.version }}"
+            if [[ -z "$version" ]]; then
+              version="manual-${GITHUB_SHA::7}"
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: GOCACHE=/tmp/go-cache go test ./...
+
+  build:
+    name: build-${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: [meta, test]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release binary
+        env:
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          BUILD_DATE: ${{ needs.meta.outputs.build_date }}
+        run: |
+          ./scripts/build-release.sh             "${{ needs.meta.outputs.version }}"             "${{ matrix.goos }}"             "${{ matrix.goarch }}"             build
+
+      - name: Package archive
+        run: |
+          ./scripts/package-release.sh             "${{ needs.meta.outputs.version }}"             "${{ matrix.goos }}"             "${{ matrix.goarch }}"             build             dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum ./*.tar.gz > kavla_${{ needs.meta.outputs.version }}_checksums.txt
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${{ needs.meta.outputs.version }}" >/dev/null 2>&1; then
+            gh release create "${{ needs.meta.outputs.version }}"               --verify-tag               --generate-notes               --title "${{ needs.meta.outputs.version }}"
+          fi
+
+      - name: Upload archives and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.meta.outputs.version }}" dist/* --clobber
+
+      - name: Look up release timestamp
+        id: release_meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          published_at=$(gh release view "${{ needs.meta.outputs.version }}" --json publishedAt --jq '.publishedAt')
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+      - name: Generate latest manifest
+        run: |
+          python3 ./scripts/generate_latest_manifest.py             --version "${{ needs.meta.outputs.version }}"             --repo "${{ github.repository }}"             --dist-dir dist             --published-at "${{ steps.release_meta.outputs.published_at }}"             --notes-url "https://github.com/${{ github.repository }}/releases/tag/${{ needs.meta.outputs.version }}"
+
+      - name: Upload latest manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.meta.outputs.version }}" dist/kavla_latest.json --clobber
