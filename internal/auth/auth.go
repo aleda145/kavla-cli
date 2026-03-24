@@ -47,10 +47,25 @@ func SaveConfig(config *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-func SaveToken(token string) error {
+func LoadConfigAllowMissing() (*Config, error) {
 	config, err := LoadConfig()
+	if err == nil {
+		return config, nil
+	}
+	if os.IsNotExist(err) {
+		return &Config{}, nil
+	}
+	return nil, err
+}
+
+func IsConfigMissing(err error) bool {
+	return os.IsNotExist(err)
+}
+
+func SaveToken(token string) error {
+	config, err := LoadConfigAllowMissing()
 	if err != nil {
-		config = &Config{}
+		return err
 	}
 	config.Token = token
 	return SaveConfig(config)

@@ -42,9 +42,9 @@ var addSourceCmd = &cobra.Command{
 }
 
 func runAddSourceWithPrompter(prompter addSourcePrompter, interactive bool) error {
-	config, err := auth.LoadConfig()
+	config, err := auth.LoadConfigAllowMissing()
 	if err != nil {
-		config = &auth.Config{Sources: make(map[string]auth.SourceConfig)}
+		return fmt.Errorf("load config: %w", err)
 	}
 	if config.Sources == nil {
 		config.Sources = make(map[string]auth.SourceConfig)

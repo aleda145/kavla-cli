@@ -28,8 +28,12 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check authentication status",
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := auth.LoadConfig()
-		if err != nil || config.Token == "" {
+		config, err := auth.LoadConfigAllowMissing()
+		if err != nil {
+			fmt.Printf("Error loading config: %v\n", err)
+			return
+		}
+		if config.Token == "" {
 			fmt.Println("Not logged in. Run 'kavla login' to authenticate.")
 			return
 		}

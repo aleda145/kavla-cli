@@ -50,9 +50,9 @@ var connectCmd = &cobra.Command{
 	Short: "Connect to a Kavla room",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := auth.LoadConfig()
+		config, err := auth.LoadConfigAllowMissing()
 		if err != nil {
-			fmt.Printf("Error loading config: %v. Please run 'kavla login' first.\n", err)
+			fmt.Printf("Error loading config: %v\n", err)
 			return
 		}
 		if config.Token == "" {

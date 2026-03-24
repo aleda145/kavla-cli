@@ -75,7 +75,11 @@ var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Authenticate with Kavla",
 	Run: func(cmd *cobra.Command, args []string) {
-		config, _ := auth.LoadConfig()
+		config, err := auth.LoadConfigAllowMissing()
+		if err != nil {
+			fmt.Printf("Error loading config: %v\n", err)
+			return
+		}
 
 		appUrl := "https://app.kavla.dev"
 		authUrl := "https://auth.kavla.dev"

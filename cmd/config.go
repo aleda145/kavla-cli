@@ -18,9 +18,10 @@ var setApiUrlCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		url := args[0]
-		config, err := auth.LoadConfig()
+		config, err := auth.LoadConfigAllowMissing()
 		if err != nil {
-			config = &auth.Config{}
+			fmt.Printf("Error loading config: %v\n", err)
+			return
 		}
 		config.ApiUrl = url
 		if err := auth.SaveConfig(config); err != nil {
@@ -37,9 +38,10 @@ var setAuthUrlCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		url := args[0]
-		config, err := auth.LoadConfig()
+		config, err := auth.LoadConfigAllowMissing()
 		if err != nil {
-			config = &auth.Config{}
+			fmt.Printf("Error loading config: %v\n", err)
+			return
 		}
 		config.AuthUrl = url
 		if err := auth.SaveConfig(config); err != nil {
@@ -56,9 +58,10 @@ var setAppUrlCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		url := args[0]
-		config, err := auth.LoadConfig()
+		config, err := auth.LoadConfigAllowMissing()
 		if err != nil {
-			config = &auth.Config{}
+			fmt.Printf("Error loading config: %v\n", err)
+			return
 		}
 		config.AppUrl = url
 		if err := auth.SaveConfig(config); err != nil {
@@ -75,7 +78,11 @@ var viewConfigCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		config, err := auth.LoadConfig()
 		if err != nil {
-			fmt.Println("No configuration found or error loading it.")
+			if auth.IsConfigMissing(err) {
+				fmt.Println("No configuration found.")
+			} else {
+				fmt.Printf("Error loading config: %v\n", err)
+			}
 			return
 		}
 		fmt.Printf("App URL:  %s\n", config.AppUrl)
