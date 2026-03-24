@@ -55,7 +55,7 @@ func BuiltInDefinitions() []Definition {
 		},
 		{
 			Type:       "bigquery",
-			Label:      "BigQuery",
+			Label:      "BigQuery (Experimental)",
 			NewAdapter: func() Adapter { return &bigQueryAdapter{} },
 			Prompt: Prompt{
 				Label: "BigQuery project ID",
