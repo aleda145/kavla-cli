@@ -12,7 +12,7 @@ import (
 func (e *Engine) getAdapterForType(executionEngine string) (sources.Adapter, error) {
 	factory, ok := e.adapterRegistry[executionEngine]
 	if !ok {
-		return nil, fmt.Errorf("unsupported execution engine: %s. Supported engines are: duckdb, directory, bigquery", executionEngine)
+		return nil, fmt.Errorf("unsupported execution engine: %s. Supported engines are: %s", executionEngine, sources.SupportedTypesString())
 	}
 	return factory(), nil
 }

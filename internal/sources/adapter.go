@@ -38,11 +38,11 @@ type Adapter interface {
 type AdapterFactory func() Adapter
 
 func BuiltIn() map[string]AdapterFactory {
-	return map[string]AdapterFactory{
-		"duckdb":    func() Adapter { return &duckDBAdapter{} },
-		"directory": func() Adapter { return &directoryAdapter{} },
-		"bigquery":  func() Adapter { return &bigQueryAdapter{} },
+	adapters := make(map[string]AdapterFactory, len(BuiltInDefinitions()))
+	for _, definition := range BuiltInDefinitions() {
+		adapters[definition.Type] = definition.NewAdapter
 	}
+	return adapters
 }
 
 func DefaultPreviewSQL(sourceName, sql string, limit int) (string, error) {

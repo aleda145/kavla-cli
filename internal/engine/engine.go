@@ -135,7 +135,7 @@ func buildStartupSecurityPlan(sourceConfigs map[string]auth.SourceConfig) (*star
 		plan.SourceOrder = append(plan.SourceOrder, name)
 		factory, ok := adapters[src.Type]
 		if !ok {
-			return nil, fmt.Errorf("unsupported execution engine: %s. Supported engines are: duckdb, directory, bigquery", src.Type)
+			return nil, fmt.Errorf("unsupported execution engine: %s. Supported engines are: %s", src.Type, sources.SupportedTypesString())
 		}
 		adapter := factory()
 		requirements, err := adapter.StartupRequirements(src)
