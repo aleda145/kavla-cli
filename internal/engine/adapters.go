@@ -21,6 +21,12 @@ func (e *Engine) PreparePreviewSQL(executionEngine, sourceName, sql string, limi
 	executionEngine = strings.TrimSpace(executionEngine)
 	sourceName = strings.TrimSpace(sourceName)
 
+	if sourceName != "" {
+		if err := e.ensureConfiguredSourceHealthy(sourceName); err != nil {
+			return "", err
+		}
+	}
+
 	if executionEngine != "" {
 		if sourceName == "" {
 			return "", fmt.Errorf("source-native preview mode requires sourceName")
@@ -35,6 +41,12 @@ func (e *Engine) PreparePreviewSQL(executionEngine, sourceName, sql string, limi
 }
 
 func (e *Engine) DescribeTable(ctx context.Context, tableRef string) ([]map[string]string, error) {
+	if sourceName := sourceNameFromTableRef(tableRef); sourceName != "" {
+		if err := e.ensureConfiguredSourceHealthy(sourceName); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := e.ensureDeferredTables(ctx, tableRef); err != nil {
 		return nil, err
 	}
@@ -70,6 +82,12 @@ func (e *Engine) DescribeTable(ctx context.Context, tableRef string) ([]map[stri
 }
 
 func (e *Engine) GetSourceStats(ctx context.Context, tableRef string) (map[string]int64, error) {
+	if sourceName := sourceNameFromTableRef(tableRef); sourceName != "" {
+		if err := e.ensureConfiguredSourceHealthy(sourceName); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := e.ensureDeferredTables(ctx, tableRef); err != nil {
 		return nil, err
 	}
@@ -113,4 +131,20 @@ func (e *Engine) sourceStatsSQL(tableRef string) (string, error) {
 		}
 	}
 	return fmt.Sprintf("SELECT count(*) FROM %s", tableRef), nil
+}
+
+func sourceNameFromTableRef(tableRef string) string {
+	tableRef = strings.TrimSpace(tableRef)
+	if tableRef == "" {
+		return ""
+	}
+	parts := strings.SplitN(tableRef, ".", 2)
+	if len(parts) < 2 {
+		return ""
+	}
+	sourceName := strings.TrimSpace(parts[0])
+	if len(sourceName) >= 2 && sourceName[0] == '"' && sourceName[len(sourceName)-1] == '"' {
+		sourceName = strings.ReplaceAll(sourceName[1:len(sourceName)-1], `""`, `"`)
+	}
+	return sourceName
 }

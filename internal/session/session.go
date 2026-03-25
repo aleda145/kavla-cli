@@ -92,12 +92,30 @@ func (s *Session) Close() error {
 	return s.engine.Close()
 }
 
-func (s *Session) SourceList() []map[string]string {
-	sourceList := make([]map[string]string, 0, len(s.sources))
+func (s *Session) SourceList() []map[string]interface{} {
+	if s.engine != nil {
+		statuses := s.engine.SourceStatuses()
+		sourceList := make([]map[string]interface{}, 0, len(statuses))
+		for _, status := range statuses {
+			entry := map[string]interface{}{
+				"name":      status.Name,
+				"type":      status.Type,
+				"available": status.Available,
+			}
+			if status.Error != "" {
+				entry["error"] = status.Error
+			}
+			sourceList = append(sourceList, entry)
+		}
+		return sourceList
+	}
+
+	sourceList := make([]map[string]interface{}, 0, len(s.sources))
 	for name, src := range s.sources {
-		sourceList = append(sourceList, map[string]string{
-			"name": name,
-			"type": src.Type,
+		sourceList = append(sourceList, map[string]interface{}{
+			"name":      name,
+			"type":      src.Type,
+			"available": true,
 		})
 	}
 	return sourceList

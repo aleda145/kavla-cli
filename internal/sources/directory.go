@@ -2,10 +2,10 @@ package sources
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,8 +21,10 @@ type deferredTable struct {
 type directoryAdapter struct {
 	logf          func(string, ...interface{})
 	sourceName    string
+	absDir        string
 	mu            sync.Mutex
 	pendingTables map[string]deferredTable
+	tableRefs     []string
 }
 
 func (*directoryAdapter) Type() string {
@@ -39,15 +41,33 @@ func (*directoryAdapter) StartupRequirements(src auth.SourceConfig) (*StartupReq
 	}, nil
 }
 
-func (d *directoryAdapter) Init(ctx context.Context, reg RegistrationContext, name string, src auth.SourceConfig) error {
+func (d *directoryAdapter) Validate(ctx context.Context, name string, src auth.SourceConfig) error {
 	absDir, err := filepath.Abs(src.Connection)
 	if err != nil {
 		return fmt.Errorf("resolve directory path: %w", err)
 	}
-	d.logf = reg.Logf
-	d.sourceName = name
-	d.pendingTables = make(map[string]deferredTable)
+	pendingTables, tableRefs, err := buildDeferredTables(absDir, name)
+	if err != nil {
+		return err
+	}
 
+	d.mu.Lock()
+	d.sourceName = name
+	d.absDir = absDir
+	d.pendingTables = pendingTables
+	d.tableRefs = tableRefs
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *directoryAdapter) Init(ctx context.Context, reg RegistrationContext, name string, src auth.SourceConfig) error {
+	if d.sourceName != name || d.absDir == "" {
+		if err := d.Validate(ctx, name, src); err != nil {
+			return err
+		}
+	}
+
+	d.logf = reg.Logf
 	schemaSQL := fmt.Sprintf("CREATE SCHEMA \"%s\"", name)
 	if reg.ExecSQL != nil {
 		if err := reg.ExecSQL(fmt.Sprintf("Create schema for directory source '%s'", name), schemaSQL); err != nil {
@@ -57,10 +77,21 @@ func (d *directoryAdapter) Init(ctx context.Context, reg RegistrationContext, na
 		return fmt.Errorf("CREATE SCHEMA: %w", err)
 	}
 
-	viewCount := 0
-	err = filepath.WalkDir(absDir, func(path string, entry os.DirEntry, err error) error {
+	d.mu.Lock()
+	viewCount := len(d.tableRefs)
+	absDir := d.absDir
+	d.mu.Unlock()
+	reg.Logf("Source '%s' (directory): allowed '%s', %d file(s) queued for lazy loading\n", name, absDir, viewCount)
+	return nil
+}
+
+func buildDeferredTables(absDir, sourceName string) (map[string]deferredTable, []string, error) {
+	pendingTables := make(map[string]deferredTable)
+	tableRefs := make([]string, 0)
+
+	err := filepath.WalkDir(absDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if entry.IsDir() {
 			return nil
@@ -77,58 +108,36 @@ func (d *directoryAdapter) Init(ctx context.Context, reg RegistrationContext, na
 
 		switch ext {
 		case ".parquet":
-			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM '%s'", name, baseName, path)
+			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM '%s'", sourceName, baseName, path)
 		case ".csv":
-			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM read_csv_auto('%s')", name, baseName, path)
+			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM read_csv_auto('%s')", sourceName, baseName, path)
 		case ".json", ".ndjson":
-			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM read_json_auto('%s')", name, baseName, path)
+			viewSQL = fmt.Sprintf("CREATE VIEW \"%s\".\"%s\" AS SELECT * FROM read_json_auto('%s')", sourceName, baseName, path)
 		default:
 			return nil
 		}
 
-		tableRef := name + "." + baseName
-		d.pendingTables[tableRef] = deferredTable{
+		tableRef := sourceName + "." + baseName
+		pendingTables[tableRef] = deferredTable{
 			ref:       tableRef,
 			matchName: baseName,
 			createSQL: viewSQL,
 		}
-		viewCount++
+		tableRefs = append(tableRefs, tableRef)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("walk directory '%s': %w", absDir, err)
+		return nil, nil, fmt.Errorf("walk directory '%s': %w", absDir, err)
 	}
 
-	reg.Logf("Source '%s' (directory): allowed '%s', %d file(s) queued for lazy loading\n", name, absDir, viewCount)
-	return nil
+	slices.Sort(tableRefs)
+	return pendingTables, tableRefs, nil
 }
 
-func (d *directoryAdapter) ListTables(ctx context.Context, db *sql.DB) ([]string, error) {
-	tables, err := listTablesFromCatalog(ctx, db, func(databaseName, schemaName, tableName string) (string, bool) {
-		if schemaName != d.sourceName {
-			return "", false
-		}
-		return schemaName + "." + tableName, true
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	tableSet := make(map[string]struct{}, len(tables))
-	for _, table := range tables {
-		tableSet[table] = struct{}{}
-	}
-
+func (d *directoryAdapter) ListTables(ctx context.Context) ([]string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, table := range d.pendingTables {
-		if _, ok := tableSet[table.ref]; ok {
-			continue
-		}
-		tables = append(tables, table.ref)
-	}
-
-	return tables, nil
+	return append([]string(nil), d.tableRefs...), nil
 }
 
 func (*directoryAdapter) PreparePreviewSQL(sourceName, sql string, limit int) (string, error) {

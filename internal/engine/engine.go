@@ -22,13 +22,14 @@ type Engine struct {
 	logf            func(string, ...interface{})
 	adapterRegistry map[string]sources.AdapterFactory
 	adapters        map[string]sources.Adapter
+	sourceStatuses  map[string]SourceStatus
 }
 
-type startupSecurityPlan struct {
-	AllowedDirectories []string
-	AllowedPaths       []string
-	StartupSQL         []string
-	SourceOrder        []string
+type SourceStatus struct {
+	Name      string
+	Type      string
+	Available bool
+	Error     string
 }
 
 // New creates a new in-memory DuckDB engine and initializes all configured sources.
@@ -51,6 +52,7 @@ func New(sourceConfigs map[string]auth.SourceConfig, logf func(string, ...interf
 		logf:            logf,
 		adapterRegistry: sources.BuiltIn(),
 		adapters:        make(map[string]sources.Adapter),
+		sourceStatuses:  make(map[string]SourceStatus),
 	}
 
 	if err := e.initializeStartup(context.Background(), sourceConfigs); err != nil {
@@ -62,30 +64,78 @@ func New(sourceConfigs map[string]auth.SourceConfig, logf func(string, ...interf
 }
 
 func (e *Engine) initializeStartup(ctx context.Context, sourceConfigs map[string]auth.SourceConfig) error {
-	plan, err := buildStartupSecurityPlan(sourceConfigs)
-	if err != nil {
-		return err
+	sourceNames := make([]string, 0, len(sourceConfigs))
+	for name := range sourceConfigs {
+		sourceNames = append(sourceNames, name)
+	}
+	slices.Sort(sourceNames)
+
+	dirSet := make(map[string]struct{})
+	pathSet := make(map[string]struct{})
+	reg := sources.RegistrationContext{
+		DB:   e.db,
+		Logf: e.logf,
+		ExecSQL: func(label, sql string) error {
+			return e.execStartupSQL(ctx, sql)
+		},
 	}
 
-	for _, sql := range plan.StartupSQL {
-		if err := e.execStartupSQL(ctx, sql); err != nil {
-			return err
-		}
-	}
-
-	for _, name := range plan.SourceOrder {
+	for _, name := range sourceNames {
 		src := sourceConfigs[name]
-		if err := e.initSource(ctx, name, src); err != nil {
-			return err
+		status := SourceStatus{Name: name, Type: src.Type}
+
+		adapter, err := e.getAdapterForType(src.Type)
+		if err != nil {
+			e.markSourceUnavailable(status, err)
+			continue
 		}
+
+		requirements, err := adapter.StartupRequirements(src)
+		if err != nil {
+			e.markSourceUnavailable(status, err)
+			continue
+		}
+
+		if err := adapter.Validate(ctx, name, src); err != nil {
+			e.markSourceUnavailable(status, err)
+			continue
+		}
+
+		if err := adapter.Init(ctx, reg, name, src); err != nil {
+			e.markSourceUnavailable(status, err)
+			continue
+		}
+
+		for _, dir := range requirements.AllowedDirectories {
+			dirSet[dir] = struct{}{}
+		}
+		for _, path := range requirements.AllowedPaths {
+			pathSet[path] = struct{}{}
+		}
+
+		status.Available = true
+		e.adapters[name] = adapter
+		e.sourceStatuses[name] = status
 	}
 
-	sql := fmt.Sprintf("SET allowed_directories = %s", sqlStringList(plan.AllowedDirectories))
+	allowedDirectories := make([]string, 0, len(dirSet))
+	for dir := range dirSet {
+		allowedDirectories = append(allowedDirectories, dir)
+	}
+	slices.Sort(allowedDirectories)
+
+	allowedPaths := make([]string, 0, len(pathSet))
+	for path := range pathSet {
+		allowedPaths = append(allowedPaths, path)
+	}
+	slices.Sort(allowedPaths)
+
+	sql := fmt.Sprintf("SET allowed_directories = %s", sqlStringList(allowedDirectories))
 	if err := e.execStartupSQL(ctx, sql); err != nil {
 		return err
 	}
 
-	sql = fmt.Sprintf("SET allowed_paths = %s", sqlStringList(plan.AllowedPaths))
+	sql = fmt.Sprintf("SET allowed_paths = %s", sqlStringList(allowedPaths))
 	if err := e.execStartupSQL(ctx, sql); err != nil {
 		return err
 	}
@@ -99,22 +149,11 @@ func (e *Engine) initializeStartup(ctx context.Context, sourceConfigs map[string
 	return nil
 }
 
-func (e *Engine) initSource(ctx context.Context, name string, src auth.SourceConfig) error {
-	adapter, err := e.getAdapterForType(src.Type)
-	if err != nil {
-		return err
-	}
-	if err := adapter.Init(ctx, sources.RegistrationContext{
-		DB:   e.db,
-		Logf: e.logf,
-		ExecSQL: func(label, sql string) error {
-			return e.execStartupSQL(ctx, sql)
-		},
-	}, name, src); err != nil {
-		return err
-	}
-	e.adapters[name] = adapter
-	return nil
+func (e *Engine) markSourceUnavailable(status SourceStatus, err error) {
+	status.Available = false
+	status.Error = err.Error()
+	e.sourceStatuses[status.Name] = status
+	e.logf("Source '%s' (%s): unavailable: %v\n", status.Name, status.Type, err)
 }
 
 func (e *Engine) execStartupSQL(ctx context.Context, sql string) error {
@@ -124,59 +163,67 @@ func (e *Engine) execStartupSQL(ctx context.Context, sql string) error {
 	return nil
 }
 
-func buildStartupSecurityPlan(sourceConfigs map[string]auth.SourceConfig) (*startupSecurityPlan, error) {
-	plan := &startupSecurityPlan{}
-	dirSet := make(map[string]struct{})
-	pathSet := make(map[string]struct{})
-	startupSQLSet := make(map[string]struct{})
-	adapters := sources.BuiltIn()
-
-	for name, src := range sourceConfigs {
-		plan.SourceOrder = append(plan.SourceOrder, name)
-		factory, ok := adapters[src.Type]
-		if !ok {
-			return nil, fmt.Errorf("unsupported execution engine: %s. Supported engines are: %s", src.Type, sources.SupportedTypesString())
-		}
-		adapter := factory()
-		requirements, err := adapter.StartupRequirements(src)
-		if err != nil {
-			return nil, fmt.Errorf("source '%s': %w", name, err)
-		}
-		for _, dir := range requirements.AllowedDirectories {
-			dirSet[dir] = struct{}{}
-		}
-		for _, path := range requirements.AllowedPaths {
-			pathSet[path] = struct{}{}
-		}
-		for _, sql := range requirements.StartupSQL {
-			if _, exists := startupSQLSet[sql]; exists {
-				continue
-			}
-			startupSQLSet[sql] = struct{}{}
-			plan.StartupSQL = append(plan.StartupSQL, sql)
-		}
-	}
-
-	for dir := range dirSet {
-		plan.AllowedDirectories = append(plan.AllowedDirectories, dir)
-	}
-	for path := range pathSet {
-		plan.AllowedPaths = append(plan.AllowedPaths, path)
-	}
-
-	slices.Sort(plan.SourceOrder)
-	slices.Sort(plan.AllowedDirectories)
-	slices.Sort(plan.AllowedPaths)
-
-	return plan, nil
-}
-
 func sqlStringList(values []string) string {
 	quoted := make([]string, 0, len(values))
 	for _, value := range values {
 		quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", "''")+"'")
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func (e *Engine) SourceStatuses() []SourceStatus {
+	names := make([]string, 0, len(e.sourceStatuses))
+	for name := range e.sourceStatuses {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	statuses := make([]SourceStatus, 0, len(names))
+	for _, name := range names {
+		statuses = append(statuses, e.sourceStatuses[name])
+	}
+	return statuses
+}
+
+func (e *Engine) unavailableSourceError(sourceName string) error {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return fmt.Errorf("source name is required")
+	}
+
+	status, ok := e.sourceStatuses[sourceName]
+	if !ok {
+		return fmt.Errorf("unknown source: %s", sourceName)
+	}
+	if !status.Available {
+		if status.Error != "" {
+			return fmt.Errorf("%s", status.Error)
+		}
+		return fmt.Errorf("source '%s' is unavailable", sourceName)
+	}
+	return nil
+}
+
+func (e *Engine) ensureSourceAvailable(sourceName string) error {
+	return e.unavailableSourceError(sourceName)
+}
+
+func (e *Engine) ensureConfiguredSourceHealthy(sourceName string) error {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return nil
+	}
+	status, ok := e.sourceStatuses[sourceName]
+	if !ok {
+		return nil
+	}
+	if status.Available {
+		return nil
+	}
+	if status.Error != "" {
+		return fmt.Errorf("%s", status.Error)
+	}
+	return fmt.Errorf("source '%s' is unavailable", sourceName)
 }
 
 func (e *Engine) Query(ctx context.Context, query string) (array.RecordReader, error) {
@@ -294,8 +341,8 @@ func (e *Engine) Query(ctx context.Context, query string) (array.RecordReader, e
 }
 
 func (e *Engine) GetTables(sourceName string) ([]string, error) {
-	if strings.TrimSpace(sourceName) == "" {
-		return nil, fmt.Errorf("source name is required")
+	if err := e.ensureSourceAvailable(sourceName); err != nil {
+		return nil, err
 	}
 
 	adapter, ok := e.adapters[sourceName]
@@ -303,7 +350,7 @@ func (e *Engine) GetTables(sourceName string) ([]string, error) {
 		return nil, fmt.Errorf("unknown source: %s", sourceName)
 	}
 
-	tables, err := adapter.ListTables(context.Background(), e.db)
+	tables, err := adapter.ListTables(context.Background())
 	if err != nil {
 		return nil, err
 	}

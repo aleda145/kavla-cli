@@ -2,7 +2,6 @@ package sources
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
@@ -11,6 +10,12 @@ import (
 
 type bigQueryAdapter struct {
 	sourceName string
+	connection string
+}
+
+var bigQueryStartupSQL = []string{
+	"INSTALL bigquery FROM community",
+	"LOAD bigquery",
 }
 
 func (bigQueryAdapter) Type() string {
@@ -18,22 +23,47 @@ func (bigQueryAdapter) Type() string {
 }
 
 func (bigQueryAdapter) StartupRequirements(src auth.SourceConfig) (*StartupRequirements, error) {
-	return &StartupRequirements{
-		StartupSQL: []string{
-			"INSTALL bigquery FROM community",
-			"LOAD bigquery",
-		},
-	}, nil
+	return &StartupRequirements{}, nil
+}
+
+func normalizeBigQueryConnection(connection string) string {
+	connStr := strings.TrimSpace(connection)
+	if !strings.Contains(connStr, "project=") {
+		connStr = "project=" + connStr
+	}
+	return connStr
+}
+
+func execSourceSQL(ctx context.Context, reg RegistrationContext, statements []string) error {
+	for _, sql := range statements {
+		if reg.ExecSQL != nil {
+			if err := reg.ExecSQL("", sql); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := reg.DB.ExecContext(ctx, sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *bigQueryAdapter) Validate(ctx context.Context, name string, src auth.SourceConfig) error {
+	b.sourceName = name
+	b.connection = normalizeBigQueryConnection(src.Connection)
+	_, err := b.ListTables(ctx)
+	return err
 }
 
 func (b *bigQueryAdapter) Init(ctx context.Context, reg RegistrationContext, name string, src auth.SourceConfig) error {
 	b.sourceName = name
-	connStr := src.Connection
-	if !strings.Contains(connStr, "project=") {
-		connStr = "project=" + connStr
+	b.connection = normalizeBigQueryConnection(src.Connection)
+	if err := execSourceSQL(ctx, reg, bigQueryStartupSQL); err != nil {
+		return fmt.Errorf("load bigquery extension: %w", err)
 	}
 
-	attachSQL := fmt.Sprintf("ATTACH '%s' AS \"%s\" (TYPE bigquery, READ_ONLY)", connStr, name)
+	attachSQL := fmt.Sprintf("ATTACH %s AS \"%s\" (TYPE bigquery, READ_ONLY)", sqlSingleQuoted(b.connection), name)
 	if reg.ExecSQL != nil {
 		if err := reg.ExecSQL(fmt.Sprintf("Attach BigQuery source '%s'", name), attachSQL); err != nil {
 			return err
@@ -41,20 +71,16 @@ func (b *bigQueryAdapter) Init(ctx context.Context, reg RegistrationContext, nam
 	} else if _, err := reg.DB.ExecContext(ctx, attachSQL); err != nil {
 		return fmt.Errorf("ATTACH bigquery: %w", err)
 	}
-	reg.Logf("Source '%s' (bigquery): attached '%s' in READ_ONLY mode\n", name, connStr)
+	reg.Logf("Source '%s' (bigquery): attached '%s' in READ_ONLY mode\n", name, b.connection)
 	return nil
 }
 
-func (b *bigQueryAdapter) ListTables(ctx context.Context, db *sql.DB) ([]string, error) {
-	return listTablesFromCatalog(ctx, db, func(databaseName, schemaName, tableName string) (string, bool) {
-		if databaseName != b.sourceName {
-			return "", false
-		}
-		if schemaName != "" && schemaName != "main" {
-			return databaseName + "." + schemaName + "." + tableName, true
-		}
-		return databaseName + "." + tableName, true
-	})
+func (b *bigQueryAdapter) ListTables(ctx context.Context) ([]string, error) {
+	if strings.TrimSpace(b.connection) == "" {
+		return nil, fmt.Errorf("bigquery source connection is required")
+	}
+	attachSQL := fmt.Sprintf("ATTACH %s AS \"%s\" (TYPE bigquery, READ_ONLY)", sqlSingleQuoted(b.connection), isolatedCatalogName)
+	return listCatalogObjectsIsolated(ctx, bigQueryStartupSQL, attachSQL, b.sourceName)
 }
 
 func (bigQueryAdapter) PreparePreviewSQL(sourceName, sql string, limit int) (string, error) {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aleda145/kavla-cli/internal/auth"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 type RegistrationContext struct {
@@ -28,8 +30,9 @@ type DeferredTableMaterializer interface {
 type Adapter interface {
 	Type() string
 	StartupRequirements(src auth.SourceConfig) (*StartupRequirements, error)
+	Validate(ctx context.Context, name string, src auth.SourceConfig) error
 	Init(ctx context.Context, reg RegistrationContext, name string, src auth.SourceConfig) error
-	ListTables(ctx context.Context, db *sql.DB) ([]string, error)
+	ListTables(ctx context.Context) ([]string, error)
 	PreparePreviewSQL(sourceName, sql string, limit int) (string, error)
 	DescribeTableSQL(tableRef string) (string, bool, error)
 	SourceStatsSQL(tableRef string) (string, bool, error)
@@ -78,66 +81,139 @@ func sourceTablePath(sourceName, tableRef string) ([]string, bool) {
 	return parts[1:], true
 }
 
-func listTablesFromCatalog(ctx context.Context, db *sql.DB, format func(databaseName, schemaName, tableName string) (string, bool)) ([]string, error) {
-	rows, err := db.QueryContext(ctx, "SHOW ALL TABLES")
+const isolatedCatalogName = "source"
+
+func sqlSingleQuoted(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func openIsolatedDuckDB() (*sql.DB, error) {
+	db, err := sql.Open("duckdb", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func withIsolatedCatalog(ctx context.Context, startupSQL []string, attachSQL string, fn func(*sql.DB) error) error {
+	db, err := openIsolatedDuckDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	for _, sql := range startupSQL {
+		if _, err := db.ExecContext(ctx, sql); err != nil {
+			return err
+		}
+	}
+	if _, err := db.ExecContext(ctx, attachSQL); err != nil {
+		return err
+	}
+	return fn(db)
+}
+
+func listCatalogSchemas(ctx context.Context, db *sql.DB, catalogName string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT schema_name
+		FROM duckdb_schemas()
+		WHERE database_name = ?
+		  AND (internal = false OR schema_name = 'main')
+		ORDER BY CASE WHEN schema_name = 'main' THEN 0 ELSE 1 END, schema_name
+	`, catalogName)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-
-	dbIdx, schemaIdx, nameIdx := -1, -1, -1
-	for i, col := range cols {
-		switch col {
-		case "database":
-			dbIdx = i
-		case "schema":
-			schemaIdx = i
-		case "name":
-			nameIdx = i
-		}
-	}
-
-	if nameIdx == -1 {
-		return nil, fmt.Errorf("could not find 'name' column in SHOW ALL TABLES output")
-	}
-
-	var tables []string
+	var schemas []string
 	for rows.Next() {
-		values := make([]interface{}, len(cols))
-		scanArgs := make([]interface{}, len(cols))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		if err := rows.Scan(scanArgs...); err != nil {
+		var schemaName string
+		if err := rows.Scan(&schemaName); err != nil {
 			return nil, err
 		}
-
-		databaseName := ""
-		schemaName := ""
-		if dbIdx >= 0 {
-			databaseName = fmt.Sprintf("%v", values[dbIdx])
-		}
-		if schemaIdx >= 0 {
-			schemaName = fmt.Sprintf("%v", values[schemaIdx])
-		}
-
-		tableName := fmt.Sprintf("%v", values[nameIdx])
-		tableRef, ok := format(databaseName, schemaName, tableName)
-		if !ok {
-			continue
-		}
-		tables = append(tables, tableRef)
+		schemas = append(schemas, schemaName)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
+	return schemas, nil
+}
+
+func listTablesInScope(ctx context.Context, db *sql.DB, scope string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW TABLES FROM %s", scope))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, err
+		}
+		tables = append(tables, tableName)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tables, nil
+}
+
+func formatSourceTableRef(sourceName, schemaName, tableName string) string {
+	if schemaName != "" && schemaName != "main" {
+		return sourceName + "." + schemaName + "." + tableName
+	}
+	return sourceName + "." + tableName
+}
+
+func listCatalogObjects(ctx context.Context, db *sql.DB, catalogName, sourceName string) ([]string, error) {
+	schemas, err := listCatalogSchemas(ctx, db, catalogName)
+	if err != nil {
+		return nil, err
+	}
+
+	tableSet := make(map[string]struct{})
+	tables := make([]string, 0)
+	for _, schemaName := range schemas {
+		scope := doubleQuotedQualified([]string{catalogName, schemaName})
+		names, err := listTablesInScope(ctx, db, scope)
+		if err != nil {
+			return nil, err
+		}
+		for _, tableName := range names {
+			tableRef := formatSourceTableRef(sourceName, schemaName, tableName)
+			if _, exists := tableSet[tableRef]; exists {
+				continue
+			}
+			tableSet[tableRef] = struct{}{}
+			tables = append(tables, tableRef)
+		}
+	}
+
+	slices.Sort(tables)
+	return tables, nil
+}
+
+func listCatalogObjectsIsolated(ctx context.Context, startupSQL []string, attachSQL, sourceName string) ([]string, error) {
+	var tables []string
+	err := withIsolatedCatalog(ctx, startupSQL, attachSQL, func(db *sql.DB) error {
+		var err error
+		tables, err = listCatalogObjects(ctx, db, isolatedCatalogName, sourceName)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
 	return tables, nil
 }

@@ -2,7 +2,6 @@ package sources
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 type duckDBAdapter struct {
 	sourceName string
+	connection string
 }
 
 func (duckDBAdapter) Type() string {
@@ -28,9 +28,17 @@ func (duckDBAdapter) StartupRequirements(src auth.SourceConfig) (*StartupRequire
 	}, nil
 }
 
+func (d *duckDBAdapter) Validate(ctx context.Context, name string, src auth.SourceConfig) error {
+	d.sourceName = name
+	d.connection = src.Connection
+	_, err := d.ListTables(ctx)
+	return err
+}
+
 func (d *duckDBAdapter) Init(ctx context.Context, reg RegistrationContext, name string, src auth.SourceConfig) error {
 	d.sourceName = name
-	sql := fmt.Sprintf("ATTACH '%s' AS \"%s\" (READ_ONLY)", src.Connection, name)
+	d.connection = src.Connection
+	sql := fmt.Sprintf("ATTACH %s AS \"%s\" (READ_ONLY)", sqlSingleQuoted(src.Connection), name)
 	if reg.ExecSQL != nil {
 		if err := reg.ExecSQL(fmt.Sprintf("Attach DuckDB source '%s'", name), sql); err != nil {
 			return err
@@ -42,16 +50,12 @@ func (d *duckDBAdapter) Init(ctx context.Context, reg RegistrationContext, name 
 	return nil
 }
 
-func (d *duckDBAdapter) ListTables(ctx context.Context, db *sql.DB) ([]string, error) {
-	return listTablesFromCatalog(ctx, db, func(databaseName, schemaName, tableName string) (string, bool) {
-		if databaseName != d.sourceName {
-			return "", false
-		}
-		if schemaName != "" && schemaName != "main" {
-			return databaseName + "." + schemaName + "." + tableName, true
-		}
-		return databaseName + "." + tableName, true
-	})
+func (d *duckDBAdapter) ListTables(ctx context.Context) ([]string, error) {
+	if strings.TrimSpace(d.connection) == "" {
+		return nil, fmt.Errorf("duckdb source connection is required")
+	}
+	attachSQL := fmt.Sprintf("ATTACH %s AS \"%s\" (READ_ONLY)", sqlSingleQuoted(d.connection), isolatedCatalogName)
+	return listCatalogObjectsIsolated(ctx, nil, attachSQL, d.sourceName)
 }
 
 func (duckDBAdapter) PreparePreviewSQL(sourceName, sql string, limit int) (string, error) {
