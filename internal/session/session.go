@@ -191,8 +191,10 @@ func (s *Session) HandleGetTables(client Client, requestID, sourceName string) {
 		_ = client.SendJSON(map[string]interface{}{
 			"type":      "error",
 			"requestId": requestID,
+			"error":     "failed to get tables: source name is required",
 			"payload": map[string]string{
 				"message": "failed to get tables: source name is required",
+				"error":   "failed to get tables: source name is required",
 			},
 		})
 		return
@@ -201,11 +203,14 @@ func (s *Session) HandleGetTables(client Client, requestID, sourceName string) {
 	tables, err := s.engine.GetTables(sourceName)
 	if err != nil {
 		s.log("Failed to get tables for source '%s': %v\n", sourceName, err)
+		message := fmt.Sprintf("failed to get tables: %v", err)
 		_ = client.SendJSON(map[string]interface{}{
 			"type":      "error",
 			"requestId": requestID,
+			"error":     message,
 			"payload": map[string]string{
-				"message": fmt.Sprintf("failed to get tables: %v", err),
+				"message": message,
+				"error":   message,
 			},
 		})
 		return
@@ -224,11 +229,14 @@ func (s *Session) HandleGetSourceSchema(client Client, requestID, tableRef strin
 	columns, err := s.engine.DescribeTable(s.ctx, tableRef)
 	if err != nil {
 		s.log("Failed to get schema for table '%s': %v\n", tableRef, err)
+		message := fmt.Sprintf("failed to get schema: %v", err)
 		_ = client.SendJSON(map[string]interface{}{
 			"type":      "error",
 			"requestId": requestID,
+			"error":     message,
 			"payload": map[string]string{
-				"message": fmt.Sprintf("failed to get schema: %v", err),
+				"message": message,
+				"error":   message,
 			},
 		})
 		return
@@ -247,11 +255,14 @@ func (s *Session) HandleGetSourceStats(client Client, requestID, tableRef string
 	stats, err := s.engine.GetSourceStats(s.ctx, tableRef)
 	if err != nil {
 		s.log("Failed to get stats for table '%s': %v\n", tableRef, err)
+		message := fmt.Sprintf("failed to get source stats: %v", err)
 		_ = client.SendJSON(map[string]interface{}{
 			"type":      "error",
 			"requestId": requestID,
+			"error":     message,
 			"payload": map[string]string{
-				"message": fmt.Sprintf("failed to get source stats: %v", err),
+				"message": message,
+				"error":   message,
 			},
 		})
 		return
