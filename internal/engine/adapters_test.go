@@ -49,6 +49,19 @@ func TestPreparePreviewSQLUsesAdapterWrappingWithExecutionEngineAndSourceName(t 
 	}
 }
 
+func TestPreparePreviewSQLUsesPostgresAdapterWrappingWithExecutionEngineAndSourceName(t *testing.T) {
+	eng := newTestEngine(t)
+
+	wrappedSQL, err := eng.PreparePreviewSQL("postgres", "analytics", `SELECT * FROM "public"."events"`, 25)
+	if err != nil {
+		t.Fatalf("PreparePreviewSQL returned error: %v", err)
+	}
+
+	if !strings.Contains(wrappedSQL, "postgres_query('analytics'") {
+		t.Fatalf("expected Postgres adapter wrapper, got %q", wrappedSQL)
+	}
+}
+
 func TestPreparePreviewSQLRequiresSourceNameForSourceNativePreview(t *testing.T) {
 	eng := newTestEngine(t)
 

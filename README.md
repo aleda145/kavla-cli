@@ -27,8 +27,9 @@ Your credentials never leave your machine.
 | DuckDB    | `duckdb`    | Path to an existing DuckDB file                      |
 | Directory | `directory` | Path to a directory with CSV, Parquet, or JSON files |
 | BigQuery  | `bigquery`  | Google Cloud project ID                              |
+| Postgres  | `postgres`  | Postgres URI                                         |
 
-## Speed Run
+## Quick start
 
 ### Install
 
@@ -36,10 +37,10 @@ Your credentials never leave your machine.
 curl -fsSL https://raw.githubusercontent.com/aleda145/kavla-cli/main/install.sh | bash
 ```
 
-### Add a DuckDB database
+### Add a source
 
 ```sh
-kavla config add-source --name local --type duckdb --connection ./analytics.duckdb
+kavla config add-source
 ```
 
 ### Login

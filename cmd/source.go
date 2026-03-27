@@ -253,7 +253,7 @@ var removeSourceCmd = &cobra.Command{
 
 func init() {
 	addSourceCmd.Flags().StringVar(&sourceName, "name", "", "Name of the source")
-	addSourceCmd.Flags().StringVar(&sourceType, "type", "", "Type of source (duckdb, directory, bigquery)")
+	addSourceCmd.Flags().StringVar(&sourceType, "type", "", "Type of source (duckdb, directory, bigquery, postgres)")
 	addSourceCmd.Flags().StringVar(&sourceConnection, "connection", "", "Connection string, file path, or project ID")
 
 	configCmd.AddCommand(addSourceCmd)

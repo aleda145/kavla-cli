@@ -64,6 +64,17 @@ func BuiltInDefinitions() []Definition {
 			},
 			ResolveConnection: resolveBigQueryProjectID,
 		},
+		{
+			Type:       "postgres",
+			Label:      "Postgres",
+			NewAdapter: func() Adapter { return &postgresAdapter{} },
+			Prompt: Prompt{
+				Label: "Postgres connection string",
+				Help:  "Postgres DSN or URI. Example: postgres://user:password@host:5432/dbname?sslmode=require",
+				Kind:  PromptKindText,
+			},
+			ResolveConnection: resolvePostgresConnection,
+		},
 	}
 }
 
@@ -174,4 +185,12 @@ func resolveBigQueryProjectID(raw string) (string, error) {
 		return "", fmt.Errorf("project ID must not contain whitespace")
 	}
 	return projectID, nil
+}
+
+func resolvePostgresConnection(raw string) (string, error) {
+	connection := strings.TrimSpace(raw)
+	if connection == "" {
+		return "", fmt.Errorf("connection string is required")
+	}
+	return connection, nil
 }

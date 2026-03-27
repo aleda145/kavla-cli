@@ -74,6 +74,33 @@ func TestRunAddSourceInteractivePromptsAndSavesConfig(t *testing.T) {
 	}
 }
 
+func TestRunAddSourceInteractivePromptsAndSavesPostgresConfig(t *testing.T) {
+	resetSourceFlags()
+	defer resetSourceFlags()
+	t.Setenv("HOME", t.TempDir())
+
+	prompter := &fakeSourcePrompter{
+		selectAnswers: []string{"postgres"},
+		inputAnswers:  []string{"warehouse", "postgres://user:password@localhost:5432/analytics?sslmode=require"},
+	}
+
+	if err := runAddSourceWithPrompter(prompter, true); err != nil {
+		t.Fatalf("runAddSourceWithPrompter returned error: %v", err)
+	}
+
+	config := loadSavedConfig(t)
+	source, ok := config.Sources["warehouse"]
+	if !ok {
+		t.Fatalf("expected saved source named warehouse, got %#v", config.Sources)
+	}
+	if source.Type != "postgres" {
+		t.Fatalf("expected type postgres, got %q", source.Type)
+	}
+	if source.Connection != "postgres://user:password@localhost:5432/analytics?sslmode=require" {
+		t.Fatalf("unexpected postgres connection %q", source.Connection)
+	}
+}
+
 func TestRunAddSourcePartialFlagsOnlyPromptsForMissingValues(t *testing.T) {
 	resetSourceFlags()
 	defer resetSourceFlags()
@@ -93,6 +120,25 @@ func TestRunAddSourcePartialFlagsOnlyPromptsForMissingValues(t *testing.T) {
 	}
 	if len(prompter.selectAnswers) != 0 {
 		t.Fatalf("expected no select prompts, got leftover answers %#v", prompter.selectAnswers)
+	}
+}
+
+func TestRunAddSourcePostgresTrimsProvidedConnection(t *testing.T) {
+	resetSourceFlags()
+	defer resetSourceFlags()
+	t.Setenv("HOME", t.TempDir())
+
+	sourceType = "postgres"
+	sourceName = "warehouse"
+	sourceConnection = "  postgres://user:password@localhost:5432/analytics  "
+
+	if err := runAddSourceWithPrompter(&fakeSourcePrompter{}, false); err != nil {
+		t.Fatalf("runAddSourceWithPrompter returned error: %v", err)
+	}
+
+	config := loadSavedConfig(t)
+	if got := config.Sources["warehouse"].Connection; got != "postgres://user:password@localhost:5432/analytics" {
+		t.Fatalf("expected trimmed postgres connection, got %q", got)
 	}
 }
 

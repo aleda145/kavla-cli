@@ -77,3 +77,22 @@ func TestBigQueryDefinitionRejectsWhitespace(t *testing.T) {
 		t.Fatal("expected whitespace validation error")
 	}
 }
+
+func TestPostgresDefinitionTrimsConnectionString(t *testing.T) {
+	definition := definitionForType(t, "postgres")
+	resolved, err := definition.ResolveConnection("  postgres://user:password@localhost:5432/analytics  ")
+	if err != nil {
+		t.Fatalf("ResolveConnection returned error: %v", err)
+	}
+	if resolved != "postgres://user:password@localhost:5432/analytics" {
+		t.Fatalf("unexpected resolved connection %q", resolved)
+	}
+}
+
+func TestPostgresDefinitionRejectsEmptyConnectionString(t *testing.T) {
+	definition := definitionForType(t, "postgres")
+	_, err := definition.ResolveConnection("   ")
+	if err == nil {
+		t.Fatal("expected empty connection validation error")
+	}
+}
