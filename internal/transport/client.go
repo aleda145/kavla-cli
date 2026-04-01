@@ -176,6 +176,22 @@ func (c *Client) GetR2PresignedURL(shapeID string) (string, string, error) {
 	return fullURL, previewURL, nil
 }
 
+func (c *Client) GetPresignedReadURL(r2ObjectKey string) (string, error) {
+	resp, err := c.SendRequest("get_presigned_read_url", map[string]string{
+		"r2ObjectKey": r2ObjectKey,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	payload, ok := resp["payload"].(string)
+	if !ok || payload == "" {
+		return "", fmt.Errorf("missing presigned read URL in response")
+	}
+
+	return payload, nil
+}
+
 func (c *Client) SendJSON(msg map[string]interface{}) error {
 	c.mu.Lock()
 	conn := c.conn

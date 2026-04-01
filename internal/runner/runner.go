@@ -37,11 +37,18 @@ type QueryRequest struct {
 	SQL string `json:"sql"`
 	// ExecutionEngine enables explicit source-native preview mode for a single source.
 	// Leave it empty to use the default federated DuckDB preview path.
-	ExecutionEngine string `json:"executionEngine,omitempty"`
-	SourceName      string `json:"sourceName,omitempty"`
-	ShapeId         string `json:"shapeId"`
-	QueryName       string `json:"queryName,omitempty"`
-	UserName        string `json:"userName,omitempty"`
+	ExecutionEngine    string              `json:"executionEngine,omitempty"`
+	SourceName         string              `json:"sourceName,omitempty"`
+	MountedFileSources []MountedFileSource `json:"mountedFileSources,omitempty"`
+	ShapeId            string              `json:"shapeId"`
+	QueryName          string              `json:"queryName,omitempty"`
+	UserName           string              `json:"userName,omitempty"`
+}
+
+type MountedFileSource struct {
+	SourceName  string `json:"sourceName"`
+	R2ObjectKey string `json:"r2ObjectKey"`
+	FileName    string `json:"fileName"`
 }
 
 type ExecuteResult struct {

@@ -15,6 +15,7 @@ type Client interface {
 	SendJSON(msg map[string]interface{}) error
 	SendResultData(shapeID string, format runner.ResultFormat, data []byte) error
 	GetR2PresignedURL(shapeID string) (string, string, error)
+	GetPresignedReadURL(r2ObjectKey string) (string, error)
 }
 
 type Session struct {
@@ -60,6 +61,12 @@ func (s *Session) SetVerboseLogger(verbosef func(string, ...interface{})) {
 func (s *Session) log(format string, args ...interface{}) {
 	if s.logf != nil {
 		s.logf(format, args...)
+	}
+}
+
+func (s *Session) verbose(format string, args ...interface{}) {
+	if s.verbosef != nil {
+		s.verbosef(format, args...)
 	}
 }
 
@@ -150,6 +157,20 @@ func (s *Session) HandleQuery(client Client, req runner.QueryRequest) {
 		s.mu.Unlock()
 	}()
 
+	if err := s.mountRemoteFileSources(queryCtx, client, req.MountedFileSources); err != nil {
+		if queryCtx.Err() != nil {
+			s.log("Query cancelled for %s\n", queryLabel)
+			return
+		}
+		s.log("Query failed: %v\n", err)
+		_ = client.SendJSON(map[string]interface{}{
+			"type":    "query_error",
+			"error":   err.Error(),
+			"shapeId": req.ShapeId,
+		})
+		return
+	}
+
 	result, err := runner.Execute(queryCtx, req, &SessionTransport{
 		client:   client,
 		logf:     s.logf,
@@ -170,6 +191,27 @@ func (s *Session) HandleQuery(client Client, req runner.QueryRequest) {
 	}
 
 	s.log("%d rows sent, %d bytes to canvas\n", result.RowCount, result.DataSize)
+}
+
+func (s *Session) mountRemoteFileSources(ctx context.Context, client Client, mountedFileSources []runner.MountedFileSource) error {
+	for _, mountedFileSource := range mountedFileSources {
+		presignedURL, err := client.GetPresignedReadURL(mountedFileSource.R2ObjectKey)
+		if err != nil {
+			return fmt.Errorf("failed to resolve presigned read URL for %q: %w", mountedFileSource.SourceName, err)
+		}
+
+		mountSQL, err := s.engine.PrepareRemoteFileMountSQL(mountedFileSource.SourceName, mountedFileSource.FileName, presignedURL)
+		if err != nil {
+			return err
+		}
+		s.verbose("Prepared remote mount SQL for source %q:\n%s\n", mountedFileSource.SourceName, mountSQL)
+
+		if err := s.engine.MountRemoteFileSource(ctx, mountedFileSource.SourceName, mountedFileSource.FileName, presignedURL); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Session) CancelQuery(shapeID string) (string, bool) {

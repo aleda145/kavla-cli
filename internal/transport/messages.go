@@ -121,13 +121,56 @@ func ParseQueryRequestMessage(msg map[string]interface{}) (runner.QueryRequest, 
 	}
 	queryName, _ := payload["queryName"].(string)
 	userName, _ := payload["userName"].(string)
+	mountedFileSources, err := parseMountedFileSources(payload["mountedFileSources"])
+	if err != nil {
+		return runner.QueryRequest{}, err
+	}
 
 	return runner.QueryRequest{
-		SQL:             sql,
-		ShapeId:         shapeID,
-		SourceName:      sourceName,
-		ExecutionEngine: executionEngine,
-		QueryName:       queryName,
-		UserName:        userName,
+		SQL:                sql,
+		ShapeId:            shapeID,
+		SourceName:         sourceName,
+		ExecutionEngine:    executionEngine,
+		MountedFileSources: mountedFileSources,
+		QueryName:          queryName,
+		UserName:           userName,
 	}, nil
+}
+
+func parseMountedFileSources(raw any) ([]runner.MountedFileSource, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("mountedFileSources must be an array")
+	}
+
+	sources := make([]runner.MountedFileSource, 0, len(items))
+	for _, item := range items {
+		candidate, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("mountedFileSources entries must be objects")
+		}
+
+		sourceName, _ := candidate["sourceName"].(string)
+		r2ObjectKey, _ := candidate["r2ObjectKey"].(string)
+		fileName, _ := candidate["fileName"].(string)
+
+		sourceName = strings.TrimSpace(sourceName)
+		r2ObjectKey = strings.TrimSpace(r2ObjectKey)
+		fileName = strings.TrimSpace(fileName)
+		if sourceName == "" || r2ObjectKey == "" || fileName == "" {
+			return nil, fmt.Errorf("mountedFileSources entries require sourceName, r2ObjectKey, and fileName")
+		}
+
+		sources = append(sources, runner.MountedFileSource{
+			SourceName:  sourceName,
+			R2ObjectKey: r2ObjectKey,
+			FileName:    fileName,
+		})
+	}
+
+	return sources, nil
 }

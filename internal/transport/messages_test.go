@@ -37,3 +37,31 @@ func TestParseQueryRequestMessageRequiresSourceNameForExecutionEngine(t *testing
 		t.Fatalf("expected sourceName validation error, got %v", err)
 	}
 }
+
+func TestParseQueryRequestMessageParsesMountedFileSources(t *testing.T) {
+	req, err := ParseQueryRequestMessage(map[string]interface{}{
+		"payload": map[string]interface{}{
+			"sql":     "SELECT * FROM orders",
+			"shapeId": "shape-1",
+			"mountedFileSources": []interface{}{
+				map[string]interface{}{
+					"sourceName":  "orders",
+					"r2ObjectKey": "owner/room/orders.parquet",
+					"fileName":    "orders.parquet",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseQueryRequestMessage returned error: %v", err)
+	}
+
+	if len(req.MountedFileSources) != 1 {
+		t.Fatalf("expected 1 mounted file source, got %d", len(req.MountedFileSources))
+	}
+
+	mounted := req.MountedFileSources[0]
+	if mounted.SourceName != "orders" || mounted.R2ObjectKey != "owner/room/orders.parquet" || mounted.FileName != "orders.parquet" {
+		t.Fatalf("unexpected mounted file source: %+v", mounted)
+	}
+}
