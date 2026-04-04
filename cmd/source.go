@@ -60,7 +60,13 @@ func runAddSourceWithPrompter(prompter addSourcePrompter, interactive bool) erro
 		return fmt.Errorf("save config: %w", err)
 	}
 
+	configPath, err := auth.GetConfigPath()
+	if err != nil {
+		return fmt.Errorf("get config path: %w", err)
+	}
+
 	fmt.Printf("Source '%s' (%s) added successfully.\n", name, sourceConfig.Type)
+	fmt.Printf("Config saved to %s\n", configPath)
 	return nil
 }
 

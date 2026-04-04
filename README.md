@@ -37,6 +37,12 @@ Your credentials never leave your machine.
 curl -fsSL https://raw.githubusercontent.com/aleda145/kavla-cli/main/install.sh | bash
 ```
 
+### Setup
+
+```sh
+kavla init
+```
+
 ### Add a source
 
 ```sh

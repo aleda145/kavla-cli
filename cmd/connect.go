@@ -50,115 +50,108 @@ var connectCmd = &cobra.Command{
 	Short: "Connect to a Kavla room",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		config, err := auth.LoadConfigAllowMissing()
-		if err != nil {
-			fmt.Printf("Error loading config: %v\n", err)
-			return
-		}
-		if config.Token == "" {
-			fmt.Println("Not logged in. Please run 'kavla login' first.")
-			return
-		}
-
-		authUrl := "https://auth.kavla.dev"
-		if config.AuthUrl != "" {
-			authUrl = config.AuthUrl
-		}
-
-		validation, err := auth.ValidateToken(authUrl, config.Token)
-		if err != nil {
-			fmt.Println("Token is invalid or expired. Run 'kavla login' to re-authenticate.")
-			return
-		}
-		if validation.Token != config.Token {
-			config.Token = validation.Token
-			if err := auth.SaveConfig(config); err != nil {
-				fmt.Printf("Failed to persist refreshed token: %v\n", err)
-				return
-			}
-		}
-
-		var roomId string
-		var roomName string
-
-		if len(args) == 1 {
-			roomId = args[0]
-		} else {
-			// Interactive canvas selection
-			fmt.Println("Fetching your canvases...")
-			rooms, err := fetchRooms(authUrl, config.Token)
-			if err != nil {
-				fmt.Printf("Error fetching canvases: %v\n", err)
-				return
-			}
-
-			if len(rooms) == 0 {
-				fmt.Println("No canvases found. Create one at app.kavla.dev first.")
-				return
-			}
-
-			selected := pickRoom(rooms)
-			if selected == -1 {
-				fmt.Println("Cancelled.")
-				return
-			}
-
-			roomId = rooms[selected].ID
-			roomName = rooms[selected].Name
-		}
-
-		targetUrl := connectUrl
-		// If flag is default, and config has value, use config
-		if !cmd.Flags().Changed("url") && config.ApiUrl != "" {
-			targetUrl = config.ApiUrl
-		}
-
-		manager := transport.NewManager(targetUrl, roomId, config.Token, config.Sources, verbose)
-		if err := manager.Prepare(); err != nil {
-			fmt.Printf("Failed to prepare local sources: %v\n", err)
-			return
-		}
-		if verbose {
-			manager.Log("Verbose logging enabled\n")
-		}
-
-		// Pre-check room access
-		fmt.Print("Checking access... ")
-		if err := checkRoomAccess(authUrl, config.Token, roomId); err != nil {
-			manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
-			fmt.Printf("\n%v\n", err)
-			return
-		}
-		if roomName != "" {
-			fmt.Printf("OK\nConnecting to \"%s\"...\n", roomName)
-		} else {
-			fmt.Printf("OK\nConnecting to %s...\n", roomId)
-		}
-
-		if err := manager.Start(); err != nil {
-			manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
-			fmt.Printf("Connection failed: %v\n", err)
-			return
-		}
-
-		// Wait for interrupt or disconnect
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(c)
-
-		select {
-		case <-c:
-			// User pressed Ctrl+C
-			manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
-		case event := <-manager.Done:
-			switch event.Reason {
-			case transport.DisconnectReasonRemoteClose:
-				fmt.Println("\nDisconnected by remote.")
-			case transport.DisconnectReasonReadError:
-				fmt.Printf("\nDisconnected due to connection error: %v\n", event.Err)
-			}
+		if err := runConnect(args, connectUrl, cmd.Flags().Changed("url")); err != nil {
+			fmt.Println(err)
 		}
 	},
+}
+
+func runConnect(args []string, urlOverride string, urlOverridden bool) error {
+	config, err := auth.LoadConfigAllowMissing()
+	if err != nil {
+		return fmt.Errorf("error loading config: %w", err)
+	}
+	if config.Token == "" {
+		return fmt.Errorf("Not logged in. Please run 'kavla login' first.")
+	}
+
+	authUrl := "https://auth.kavla.dev"
+	if config.AuthUrl != "" {
+		authUrl = config.AuthUrl
+	}
+
+	validation, err := auth.ValidateToken(authUrl, config.Token)
+	if err != nil {
+		return fmt.Errorf("Token is invalid or expired. Run 'kavla login' to re-authenticate.")
+	}
+	if validation.Token != config.Token {
+		config.Token = validation.Token
+		if err := auth.SaveConfig(config); err != nil {
+			return fmt.Errorf("Failed to persist refreshed token: %w", err)
+		}
+	}
+
+	var roomId string
+	var roomName string
+
+	if len(args) == 1 {
+		roomId = args[0]
+	} else {
+		fmt.Println("Fetching your canvases...")
+		rooms, err := fetchRooms(authUrl, config.Token)
+		if err != nil {
+			return fmt.Errorf("Error fetching canvases: %w", err)
+		}
+
+		if len(rooms) == 0 {
+			return fmt.Errorf("No canvases found. Create one at app.kavla.dev first.")
+		}
+
+		selected := pickRoom(rooms)
+		if selected == -1 {
+			return fmt.Errorf("Cancelled.")
+		}
+
+		roomId = rooms[selected].ID
+		roomName = rooms[selected].Name
+	}
+
+	targetUrl := urlOverride
+	if !urlOverridden && config.ApiUrl != "" {
+		targetUrl = config.ApiUrl
+	}
+
+	manager := transport.NewManager(targetUrl, roomId, config.Token, config.Sources, verbose)
+	if err := manager.Prepare(); err != nil {
+		return fmt.Errorf("Failed to prepare local sources: %w", err)
+	}
+	if verbose {
+		manager.Log("Verbose logging enabled\n")
+	}
+
+	fmt.Print("Checking access... ")
+	if err := checkRoomAccess(authUrl, config.Token, roomId); err != nil {
+		manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
+		return fmt.Errorf("\n%w", err)
+	}
+	if roomName != "" {
+		fmt.Printf("OK\nConnecting to \"%s\"...\n", roomName)
+	} else {
+		fmt.Printf("OK\nConnecting to %s...\n", roomId)
+	}
+
+	if err := manager.Start(); err != nil {
+		manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
+		return fmt.Errorf("Connection failed: %w", err)
+	}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(c)
+
+	select {
+	case <-c:
+		manager.Stop(transport.DisconnectReasonLocalShutdown, nil)
+	case event := <-manager.Done:
+		switch event.Reason {
+		case transport.DisconnectReasonRemoteClose:
+			fmt.Println("\nDisconnected by remote.")
+		case transport.DisconnectReasonReadError:
+			fmt.Printf("\nDisconnected due to connection error: %v\n", event.Err)
+		}
+	}
+
+	return nil
 }
 
 func init() {
